@@ -283,12 +283,15 @@
     </div>
 
     <footer>
-      Built with <a href="https://github.com/soldair/node-qrcode" target="_blank" rel="noopener">qrcode</a>
+      Built with <a href="https://github.com/davidshimjs/qrcodejs" target="_blank" rel="noopener">qrcodejs</a>
       · Open source · No tracking
     </footer>
   </div>
 
-  <script src="https://unpkg.com/qrcode@1.5.4/build/qrcode.min.js"></script>
+  <!-- Hidden holder used by qrcodejs -->
+  <div id="qrcodeHost" style="display:none"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   <script>
     const textInput = document.getElementById('textInput');
     const logoInput = document.getElementById('logoInput');
@@ -310,10 +313,19 @@
     const placeholder = document.getElementById('placeholder');
     const downloadBtn = document.getElementById('downloadBtn');
     const copyBtn = document.getElementById('copyBtn');
+    const qrcodeHost = document.getElementById('qrcodeHost');
 
-    let logoImg = null; // HTMLImageElement
+    let logoImg = null;
     let currentCanvas = null;
     let genTimer = null;
+    let qrInstance = null;
+
+    const ECC_MAP = {
+      L: QRCode.CorrectLevel.L,
+      M: QRCode.CorrectLevel.M,
+      Q: QRCode.CorrectLevel.Q,
+      H: QRCode.CorrectLevel.H
+    };
 
     function scheduleGenerate() {
       clearTimeout(genTimer);
@@ -330,10 +342,10 @@
         logoPreviewWrap.classList.add('visible');
         logoControls.style.display = 'block';
         logoOpacityField.style.display = 'block';
-        // Prefer high ECC when logo is present
         if (ecc.value === 'L' || ecc.value === 'M') ecc.value = 'H';
         scheduleGenerate();
       };
+      img.onerror = () => alert('Could not load that image.');
       img.src = url;
     }
 
@@ -383,12 +395,12 @@
       el.addEventListener('change', scheduleGenerate);
     });
 
-    async function generate() {
+    function generate() {
       const text = textInput.value.trim();
       if (!text) {
         canvasWrap.innerHTML = '';
-        canvasWrap.appendChild(placeholder);
         placeholder.style.display = 'block';
+        canvasWrap.appendChild(placeholder);
         currentCanvas = null;
         downloadBtn.disabled = true;
         copyBtn.disabled = true;
@@ -398,66 +410,74 @@
       const px = parseInt(sizeSel.value, 10) || 320;
       const colorDark = fg.value.trim() || '#000000';
       const colorLight = bg.value.trim() || '#ffffff';
+      const level = ECC_MAP[ecc.value] != null ? ECC_MAP[ecc.value] : QRCode.CorrectLevel.H;
 
       try {
-        // Render QR to an offscreen canvas at the target pixel size
-        const qrCanvas = document.createElement('canvas');
-        await QRCode.toCanvas(qrCanvas, text, {
-          errorCorrectionLevel: ecc.value || 'H',
+        // qrcodejs renders into a DOM node (canvas or table)
+        qrcodeHost.innerHTML = '';
+        qrInstance = new QRCode(qrcodeHost, {
+          text: text,
           width: px,
-          margin: 2,
-          color: {
-            dark: colorDark,
-            light: colorLight
-          }
+          height: px,
+          colorDark: colorDark,
+          colorLight: colorLight,
+          correctLevel: level
         });
 
-        const out = document.createElement('canvas');
-        out.width = px;
-        out.height = px;
-        const ctx = out.getContext('2d');
-        ctx.drawImage(qrCanvas, 0, 0);
+        // Prefer the canvas it creates; fall back to img
+        const srcEl = qrcodeHost.querySelector('canvas') || qrcodeHost.querySelector('img');
+        if (!srcEl) throw new Error('QR library produced no image');
 
-        if (logoImg) {
-          const pct = (parseInt(logoSize.value, 10) || 18) / 100;
-          const opacity = (parseInt(logoOpacity.value, 10) || 100) / 100;
-          const logoArea = px * pct;
-
-          // Fit logo inside square area, preserve aspect ratio
-          const scale = Math.min(logoArea / logoImg.width, logoArea / logoImg.height);
-          const lw = logoImg.width * scale;
-          const lh = logoImg.height * scale;
-          const lx = (px - lw) / 2;
-          const ly = (px - lh) / 2;
-
-          // Soft pad behind logo for contrast (helps scanning)
-          const pad = Math.max(4, px * 0.012);
+        const draw = () => {
+          const out = document.createElement('canvas');
+          out.width = px;
+          out.height = px;
+          const ctx = out.getContext('2d');
           ctx.fillStyle = colorLight;
-          ctx.globalAlpha = Math.min(1, opacity + 0.15);
-          const rx = lx - pad;
-          const ry = ly - pad;
-          const rw = lw + pad * 2;
-          const rh = lh + pad * 2;
-          const r = Math.min(8, pad * 2);
-          ctx.beginPath();
-          ctx.moveTo(rx + r, ry);
-          ctx.arcTo(rx + rw, ry, rx + rw, ry + rh, r);
-          ctx.arcTo(rx + rw, ry + rh, rx, ry + rh, r);
-          ctx.arcTo(rx, ry + rh, rx, ry, r);
-          ctx.arcTo(rx, ry, rx + rw, ry, r);
-          ctx.closePath();
-          ctx.fill();
+          ctx.fillRect(0, 0, px, px);
+          ctx.drawImage(srcEl, 0, 0, px, px);
 
-          ctx.globalAlpha = opacity;
-          ctx.drawImage(logoImg, lx, ly, lw, lh);
-          ctx.globalAlpha = 1;
+          if (logoImg) {
+            const pct = (parseInt(logoSize.value, 10) || 18) / 100;
+            const opacity = (parseInt(logoOpacity.value, 10) || 100) / 100;
+            const logoArea = px * pct;
+            const scale = Math.min(logoArea / logoImg.width, logoArea / logoImg.height);
+            const lw = logoImg.width * scale;
+            const lh = logoImg.height * scale;
+            const lx = (px - lw) / 2;
+            const ly = (px - lh) / 2;
+
+            const pad = Math.max(4, px * 0.012);
+            ctx.fillStyle = colorLight;
+            ctx.globalAlpha = Math.min(1, opacity + 0.15);
+            const rx = lx - pad, ry = ly - pad, rw = lw + pad * 2, rh = lh + pad * 2;
+            const r = Math.min(8, pad * 2);
+            ctx.beginPath();
+            ctx.moveTo(rx + r, ry);
+            ctx.arcTo(rx + rw, ry, rx + rw, ry + rh, r);
+            ctx.arcTo(rx + rw, ry + rh, rx, ry + rh, r);
+            ctx.arcTo(rx, ry + rh, rx, ry, r);
+            ctx.arcTo(rx, ry, rx + rw, ry, r);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.globalAlpha = opacity;
+            ctx.drawImage(logoImg, lx, ly, lw, lh);
+            ctx.globalAlpha = 1;
+          }
+
+          canvasWrap.innerHTML = '';
+          canvasWrap.appendChild(out);
+          currentCanvas = out;
+          downloadBtn.disabled = false;
+          copyBtn.disabled = false;
+        };
+
+        if (srcEl.tagName === 'IMG' && !srcEl.complete) {
+          srcEl.onload = draw;
+        } else {
+          draw();
         }
-
-        canvasWrap.innerHTML = '';
-        canvasWrap.appendChild(out);
-        currentCanvas = out;
-        downloadBtn.disabled = false;
-        copyBtn.disabled = false;
       } catch (err) {
         console.error(err);
         canvasWrap.innerHTML = '';
@@ -498,3 +518,4 @@
   </script>
 </body>
 </html>
+
